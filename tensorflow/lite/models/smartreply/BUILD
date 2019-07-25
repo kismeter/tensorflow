@@ -1,11 +1,12 @@
-package(default_visibility = [
-    "//visibility:public",
-])
-
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow/lite:build_def.bzl", "gen_selected_ops", "tflite_copts")
 
-licenses(["notice"])  # Apache 2.0
+package(
+    default_visibility = [
+        "//visibility:public",
+    ],
+    licenses = ["notice"],  # Apache 2.0
+)
 
 exports_files(["LICENSE"])
 
@@ -50,6 +51,7 @@ cc_library(
     ],
 )
 
+# TODO(b/118895218): Make this test compatible with oss.
 tf_cc_test(
     name = "predictor_test",
     srcs = ["predictor_test.cc"],
@@ -57,6 +59,7 @@ tf_cc_test(
         "//tensorflow/lite/models:testdata/smartreply_samples.tsv",
         "@tflite_smartreply//:smartreply.tflite",
     ],
+    tags = ["no_oss"],
     deps = [
         ":predictor_lib",
         "//tensorflow/core:test",
@@ -67,10 +70,11 @@ tf_cc_test(
     ],
 )
 
-tf_cc_test(
+cc_test(
     name = "extract_feature_op_test",
     size = "small",
     srcs = ["ops/extract_feature_test.cc"],
+    tags = ["no_oss"],
     deps = [
         ":custom_ops",
         "//tensorflow/lite:framework",
@@ -81,10 +85,11 @@ tf_cc_test(
     ],
 )
 
-tf_cc_test(
+cc_test(
     name = "normalize_op_test",
     size = "small",
     srcs = ["ops/normalize_test.cc"],
+    tags = ["no_oss"],
     deps = [
         ":custom_ops",
         "//tensorflow/lite:framework",
@@ -95,10 +100,11 @@ tf_cc_test(
     ],
 )
 
-tf_cc_test(
+cc_test(
     name = "predict_op_test",
     size = "small",
     srcs = ["ops/predict_test.cc"],
+    tags = ["no_oss"],
     deps = [
         ":custom_ops",
         "//tensorflow/lite:framework",

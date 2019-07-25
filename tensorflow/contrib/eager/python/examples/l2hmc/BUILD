@@ -1,8 +1,9 @@
-licenses(["notice"])  # Apache 2.0
-
-package(default_visibility = ["//tensorflow:internal"])
-
 load("//tensorflow:tensorflow.bzl", "cuda_py_test")
+
+package(
+    default_visibility = ["//tensorflow:internal"],
+    licenses = ["notice"],  # Apache 2.0
+)
 
 py_library(
     name = "neural_nets",
@@ -28,7 +29,7 @@ py_library(
 
 cuda_py_test(
     name = "l2hmc_test",
-    size = "large",
+    size = "medium",
     srcs = ["l2hmc_test.py"],
     additional_deps = [
         ":l2hmc",
@@ -36,6 +37,7 @@ cuda_py_test(
         "//tensorflow/contrib/eager/python:tfe",
         "//third_party/py/numpy",
     ],
+    shard_count = 4,
     tags = [
         "oss_serial",
     ],

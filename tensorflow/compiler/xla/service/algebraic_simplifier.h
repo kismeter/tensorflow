@@ -63,23 +63,21 @@ class AlgebraicSimplifierOptions {
     return enable_dot_strength_reduction_;
   }
 
+  // Enable dot->multiple rewrite for dot as an outer-product
+  void set_enable_dot_to_multiply_rewrite(bool enable_dot_to_multiply_rewrite) {
+    enable_dot_to_multiply_rewrite_ = enable_dot_to_multiply_rewrite;
+  }
+
+  bool enable_dot_to_multiply_rewrite() const {
+    return enable_dot_to_multiply_rewrite_;
+  }
+
   // Enable convolution simplification on platforms where it is profitable.
   void set_enable_conv_simplification(bool enable_conv_simplification) {
     enable_conv_simplification_ = enable_conv_simplification;
   }
   bool enable_conv_simplification() const {
     return enable_conv_simplification_;
-  }
-
-  // If enable_permutation_sort_replacement is true, a sort op that is known to
-  // sort a permutation will be replaced with a scatter op.
-  void set_enable_permutation_sort_replacement(
-      bool enable_permutation_sort_replacement) {
-    enable_permutation_sort_replacement_ = enable_permutation_sort_replacement;
-  }
-
-  bool enable_permutation_sort_replacement() const {
-    return enable_permutation_sort_replacement_;
   }
 
   // If enable_window_reduce_replacement is true, the kReduceWindow instruction
@@ -98,8 +96,8 @@ class AlgebraicSimplifierOptions {
   ReshapeIsBitcastCallback reshape_is_bitcast_callback_;
   bool is_layout_sensitive_{false};
   bool enable_dot_strength_reduction_{true};
+  bool enable_dot_to_multiply_rewrite_{true};
   bool enable_conv_simplification_{true};
-  bool enable_permutation_sort_replacement_{false};
   bool enable_window_reduce_to_reduce_replacement_{true};
 };
 
@@ -116,6 +114,15 @@ class AlgebraicSimplifier : public HloModulePass {
   // Run algebraic simplification on the given computation. Returns whether the
   // computation was changed.
   StatusOr<bool> Run(HloModule* module) override;
+
+  // Create constant from literal with tiles and element size updated in the
+  // constant's layout.
+  std::unique_ptr<HloInstruction> CreateConstantWithLayoutUpdated(
+      Literal literal) {
+    auto constant = HloInstruction::CreateConstant(std::move(literal));
+    UpdateLayout(constant->mutable_shape());
+    return constant;
+  }
 
  private:
   AlgebraicSimplifierOptions options_;

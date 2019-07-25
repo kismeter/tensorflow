@@ -188,7 +188,8 @@ class InstructionList {
   Item* CreateItem(HloInstruction* inst) {
     Item* item = new Item;
     item->instruction = inst;
-    CHECK(item_map_.insert({inst, item}).second) << "inserting inst twice";
+    CHECK(item_map_.insert({inst, item}).second)
+        << "inserting inst twice " << inst->name();
     return item;
   }
 
@@ -346,6 +347,10 @@ class MemoryUsageTracker {
   // if the given instruction is rematerialized.
   int64 MemoryReducedIfRematerialized(Item* item) const;
 
+  // Returns the number of bytes that the current memory usage will be reduced
+  // by if the given sequence of instructions is rematerialized.
+  int64 MemoryReducedIfRematerialized(const absl::Span<Item*>& items) const;
+
   // Adjusts memory usage to account for the rematerialization of
   // original_item for all remaining unplaced uses. The rematerialization
   // is remat_item. This method should be called after the HLO graph has
@@ -426,11 +431,12 @@ class MemoryUsageTracker {
   // the given uses.
   Buffer& RematerializeBuffer(const Buffer& original_buffer, Item* remat_item,
                               ItemList&& rematerialized_uses) {
-    CHECK(original_buffer.defining_instruction->placed);
-    CHECK(!original_buffer.has_indirect_uses);
-    CHECK(!original_buffer.live_out);
+    CHECK(original_buffer.defining_instruction->placed)
+        << original_buffer.defining_instruction->instruction->name();
+    CHECK(!original_buffer.has_indirect_uses) << original_buffer.ToString();
+    CHECK(!original_buffer.live_out) << original_buffer.ToString();
     for (Item* use : rematerialized_uses) {
-      CHECK(!use->placed);
+      CHECK(!use->placed) << use->instruction->name();
     }
     return NewBuffer(remat_item, original_buffer.size,
                      std::move(rematerialized_uses), /*live_out=*/false,
@@ -651,7 +657,7 @@ int64 MemoryUsageTracker::MemoryReducedIfRematerialized(Item* item) const {
   for (BufferId buffer_id : item->buffers_defined) {
     // Avoid rematerializing instructions with indirect uses as it is difficult
     // to reason about liveness after rematerializing the instruction.
-    // TODO(b/37714814): Consider rematerialzing instructions with indirect
+    // TODO(b/37714814): Consider rematerializing instructions with indirect
     // uses.
     if (buffers_.at(buffer_id).has_indirect_uses) {
       return 0;
@@ -676,6 +682,60 @@ int64 MemoryUsageTracker::MemoryReducedIfRematerialized(Item* item) const {
   return memory_reduced;
 }
 
+int64 MemoryUsageTracker::MemoryReducedIfRematerialized(
+    const absl::Span<Item*>& items) const {
+  CHECK_NE(in_progress_item_, nullptr);
+  int64 memory_reduced = 0;
+  absl::flat_hash_set<Item*> remat_candidates;
+
+  for (Item* item : items) {
+    if (!item->placed || item == in_progress_item_) {
+      LOG(WARNING) << "Unplaced item or in progress item being checked for "
+                      "rematerialization.";
+      return 0;
+    }
+
+    // Compute the amount of memory reduced (if any) by rematerializing
+    // 'item->instruction'. The LogicalBuffers defined by 'item->instruction'
+    // will no longer be live at this program point, so initially set
+    // memory_reduced to the size of its defined values.
+    for (BufferId buffer_id : item->buffers_defined) {
+      // Avoid rematerializing instructions with indirect uses as it is
+      // difficult to reason about liveness after rematerializing the
+      // instruction.
+      // Avoid rematerializing instructions with live out buffers.
+      // TODO(mpurohit): Check why live_out buffers are an issue here.
+      if (buffers_.at(buffer_id).has_indirect_uses ||
+          buffers_.at(buffer_id).live_out) {
+        return 0;
+      }
+
+      if (IsCurrentlyLive(buffer_id) && !IsInUse(buffer_id)) {
+        memory_reduced += AllocatedSize(buffer_id);
+      }
+    }
+
+    // Account for any logical buffers whose live range must be extended across
+    // this program point.
+    for (BufferId buffer_id : item->buffers_used) {
+      if (!IsCurrentlyLive(buffer_id)) {
+        // This logical buffer is used by 'item->instruction' but is not live at
+        // this program point. Rematerializing 'item->instruction' will extend
+        // the buffer's live range across this program point unless it is
+        // defined by an instruction that is also being rematerialized.
+        Item* defining_instruction =
+            buffers_.at(buffer_id).defining_instruction;
+        if (!remat_candidates.contains(defining_instruction)) {
+          memory_reduced -= AllocatedSize(buffer_id);
+        }
+      }
+    }
+    remat_candidates.insert(item);
+  }
+
+  return memory_reduced;
+}
+
 Status MemoryUsageTracker::AddRematerializedInstruction(Item* original_item,
                                                         Item* remat_item) {
   VLOG(3) << "AddRematerializedInstruction: original_instruction = "
@@ -683,8 +743,8 @@ Status MemoryUsageTracker::AddRematerializedInstruction(Item* original_item,
           << ", remat_instruction = " << remat_item->instruction->name();
 
   TF_RET_CHECK(in_progress_item_ != nullptr);
-  TF_RET_CHECK(original_item->placed);
-  TF_RET_CHECK(!remat_item->placed);
+  TF_RET_CHECK(original_item->placed) << original_item->instruction->name();
+  TF_RET_CHECK(!remat_item->placed) << remat_item->instruction->name();
 
   // Construct the list of buffers used and defined by the rematerialization.
   remat_item->buffers_used = original_item->buffers_used;
@@ -713,7 +773,7 @@ Status MemoryUsageTracker::AddRematerializedInstruction(Item* original_item,
     ItemList unplaced_users;
     for (Item* user : old_buffer.users) {
       if (user->placed) {
-        CHECK(IsFinished(user));
+        CHECK(IsFinished(user)) << user->instruction->name();
         placed_users.push_back(user);
       } else {
         unplaced_users.push_back(user);
@@ -1098,7 +1158,7 @@ StatusOr<bool> HloRematerialization::RematerializeComputation(
         Item* successor_item = instruction_list.GetItem(successor);
         // Assert to make sure we never remat an operation with control
         // successor already placed.
-        CHECK(!successor_item->placed);
+        CHECK(!successor_item->placed) << successor_item->instruction->name();
         place_before.push_back(successor_item);
       }
       instruction_list.InsertBeforeInstructions(remat_item, place_before);
@@ -1168,7 +1228,7 @@ StatusOr<bool> HloRematerialization::RematerializeComputation(
   // Verify some invariants on the memory tracker.
   CHECK_EQ(memory_tracker.memory_usage(), 0);
   for (auto* instruction : computation->instructions()) {
-    CHECK(memory_tracker.IsPlaced(instruction));
+    CHECK(memory_tracker.IsPlaced(instruction)) << instruction->name();
   }
 
   VLOG(1) << "In computation " << computation->name() << " rematerialized "
@@ -1219,9 +1279,13 @@ StatusOr<bool> HloRematerialization::Run(HloModule* module) {
   int64 module_output_size = 0;
   ShapeUtil::ForEachSubshape(
       module->result_shape(),
-      [&module_output_size, this](const Shape& subshape,
-                                  const ShapeIndex& /*index*/) {
-        module_output_size += size_function_(subshape);
+      [&module_output_size, module, this](const Shape& subshape,
+                                          const ShapeIndex& output_index) {
+        if (!module->input_output_alias_config().OutputHasAlias(output_index)) {
+          // Only account for non-aliased outputs to avoid double counting a
+          // parameter buffer twice.
+          module_output_size += size_function_(subshape);
+        }
       });
 
   const int64 adjusted_memory_limit_bytes =
@@ -1264,12 +1328,18 @@ StatusOr<bool> HloRematerialization::Run(HloModule* module) {
 
   // Rematerialization can introduce dead code. This occurs if all uses of an
   // instruction are replaced with rematerializations of the instruction.
+
+  // Stash away the schedule during copy insertion, to avoid validation failures
+  // while the module is in flux.
+  HloSchedule saved_schedule = module->schedule();
+  module->clear_schedule();
   TF_ASSIGN_OR_RETURN(bool dead_code_removed, HloDCE().Run(module));
   changed |= dead_code_removed;
 
   // After DCE, the module sequence may include instructions which no longer
-  // exist.
-  TF_RETURN_IF_ERROR(module->schedule().Update());
+  // exist. Update the schedule and restore it.
+  TF_RETURN_IF_ERROR(saved_schedule.Update());
+  TF_RETURN_IF_ERROR(module->set_schedule(std::move(saved_schedule)));
   VLOG(1) << "Rematerialized " << instructions_rematerialized_
           << " instructions in module " << module->name() << "; "
           << net_instructions_added_ << " net instructions added";

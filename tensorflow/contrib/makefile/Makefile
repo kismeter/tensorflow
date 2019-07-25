@@ -109,7 +109,7 @@ $(HOST_NSYNC_LIB) \
 
 # If we're on Linux, also link in the dl library.
 ifeq ($(HOST_OS),LINUX)
-	HOST_LIBS += -ldl -lpthread
+	HOST_LIBS += -ldl -lpthread -lrt
 endif
 
 # If we're on a Pi, link in pthreads and dl
@@ -133,6 +133,8 @@ $(wildcard tensorflow/contrib/makefile/downloads/absl/absl/*/*benchmark*.cc) \
 $(wildcard tensorflow/contrib/makefile/downloads/absl/absl/*/*/*benchmark*.cc) \
 $(wildcard tensorflow/contrib/makefile/downloads/absl/absl/*/*/*/*benchmark*.cc) \
 $(wildcard tensorflow/contrib/makefile/downloads/absl/absl/*/*/*/*/*benchmark*.cc) \
+$(wildcard tensorflow/contrib/makefile/downloads/absl/absl/random/*.cc) \
+$(wildcard tensorflow/contrib/makefile/downloads/absl/absl/random/internal/*.cc) \
 tensorflow/contrib/makefile/downloads/absl/absl/synchronization/internal/mutex_nonprod.cc \
 tensorflow/contrib/makefile/downloads/absl/absl/hash/internal/print_hash_of.cc
 
@@ -259,7 +261,7 @@ endif
 endif
 # If we're on Linux, also link in the dl library.
 ifeq ($(TARGET),LINUX)
-	LIBS += -ldl -lpthread
+	LIBS += -ldl -lpthread -lrt
 endif
 # If we're cross-compiling for the Raspberry Pi, use the right gcc.
 ifeq ($(TARGET),PI)
@@ -439,7 +441,6 @@ $(MARCH_OPTION) \
 -Itensorflow/core/kernels \
 -I$(MAKEFILE_DIR)/downloads/cub \
 -I$(MAKEFILE_DIR)/downloads/cub/cub_archive/cub/device \
--Ithird_party/toolchains/gpus/cuda \
 -I$(JETPACK)/cuda/include \
 -I$(JETPACK) \
 -I$(JETPACK)/cuDNN/aarch64 \
@@ -510,6 +511,7 @@ ifeq ($(TARGET),IOS)
 		-fembed-bitcode \
 		-miphoneos-version-min=${MIN_SDK_VERSION} \
 		-framework Accelerate \
+    -framework CoreFoundation \
 		-Xlinker -S \
 		-Xlinker -x \
 		-Xlinker -dead_strip \
@@ -534,6 +536,7 @@ ifeq ($(TARGET),IOS)
 		-fembed-bitcode \
 		-miphoneos-version-min=${MIN_SDK_VERSION} \
 		-framework Accelerate \
+    -framework CoreFoundation \
 		-Xlinker -S \
 		-Xlinker -x \
 		-Xlinker -dead_strip \
@@ -556,7 +559,8 @@ ifeq ($(TARGET),IOS)
 		LDFLAGS := -arch arm64 \
 		-fembed-bitcode \
 		-miphoneos-version-min=${MIN_SDK_VERSION} \
-		-framework Accelerate \
+	  -framework Accelerate \
+    -framework CoreFoundation \
 		-Xlinker -S \
 		-Xlinker -x \
 		-Xlinker -dead_strip \
@@ -580,7 +584,8 @@ ifeq ($(TARGET),IOS)
 		LDFLAGS := -arch i386 \
 		-fembed-bitcode \
 		-mios-simulator-version-min=${MIN_SDK_VERSION} \
-		-framework Accelerate \
+    -framework Accelerate \
+    -framework CoreFoundation \
 		-Xlinker -S \
 		-Xlinker -x \
 		-Xlinker -dead_strip \
@@ -604,6 +609,7 @@ ifeq ($(TARGET),IOS)
 		-fembed-bitcode \
 		-mios-simulator-version-min=${MIN_SDK_VERSION} \
 		-framework Accelerate \
+    -framework CoreFoundation \
 		-Xlinker -S \
 		-Xlinker -x \
 		-Xlinker -dead_strip \
@@ -630,6 +636,12 @@ BENCHMARK_NAME := $(BINDIR)benchmark
 
 CORE_CC_ALL_SRCS := \
 $(ABSL_CC_SRCS) \
+tensorflow/c/c_api.cc \
+tensorflow/c/kernels.cc \
+tensorflow/c/tf_datatype.cc \
+tensorflow/c/tf_status.cc \
+tensorflow/c/tf_status_helper.cc \
+tensorflow/c/tf_tensor.cc \
 $(wildcard tensorflow/core/*.cc) \
 $(wildcard tensorflow/core/common_runtime/*.cc) \
 $(wildcard tensorflow/core/framework/*.cc) \
@@ -643,6 +655,10 @@ $(wildcard tensorflow/core/platform/*/*/*.cc) \
 $(wildcard tensorflow/core/util/*.cc) \
 $(wildcard tensorflow/core/util/*/*.cc) \
 $(wildcard tensorflow/contrib/makefile/downloads/double_conversion/double-conversion/*.cc) \
+tensorflow/core/profiler/internal/profiler_interface.cc \
+tensorflow/core/profiler/internal/traceme_recorder.cc \
+tensorflow/core/profiler/lib/profiler_session.cc \
+tensorflow/core/profiler/lib/traceme.cc \
 tensorflow/core/util/version_info.cc
 # Remove duplicates (for version_info.cc)
 CORE_CC_ALL_SRCS := $(sort $(CORE_CC_ALL_SRCS))
@@ -678,7 +694,7 @@ $(wildcard tensorflow/core/platform/windows/*) \
 $(wildcard tensorflow/core/grappler/inputs/trivial_test_graph_input_yielder.*) \
 $(wildcard tensorflow/core/grappler/inputs/file_input_yielder.*) \
 $(wildcard tensorflow/core/grappler/clusters/single_machine.*) \
-tensorflow/core/util/cuda_kernel_helper_test.cu.cc
+tensorflow/core/util/gpu_kernel_helper_test.cu.cc
 
 CORE_CC_EXCLUDE_SRCS := \
 $(CORE_CC_EXCLUDE_SRCS_NON_GPU) \
@@ -893,6 +909,18 @@ $(HOST_OBJDIR)%.pb.o: $(HOST_GENDIR)%.pb.cc
 # Ensures we wait until proto_text has generated the .h files from protos before
 # we compile the C++.
 $(PROTO_TEXT_OBJS) : $(PROTO_TEXT_PB_H_FILES)
+
+# Ensures we link CoreFoundation as it is used for time library when building
+# for Mac and iOS
+ifeq ($(TARGET),OSX)
+  ifeq ($(HOST_ARCH),x86_64)
+    HOST_LDOPTS += -framework CoreFoundation
+    LIBS += -framework CoreFoundation
+  endif
+endif
+ifeq ($(TARGET),IOS)
+  HOST_LDOPTS += -framework CoreFoundation
+endif
 
 # Runs proto_text to generate C++ source files from protos.
 $(PROTO_TEXT): $(PROTO_TEXT_OBJS) $(PROTO_TEXT_PB_H_FILES)

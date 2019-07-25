@@ -24,10 +24,10 @@ limitations under the License.
 #include "tensorflow/lite/builtin_ops.h"
 #include "tensorflow/lite/c/c_api_internal.h"
 #include "tensorflow/lite/context_util.h"
+#include "tensorflow/lite/core/api/profiler.h"
 #include "tensorflow/lite/delegates/flex/delegate_data.h"
 #include "tensorflow/lite/delegates/flex/util.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
-#include "tensorflow/lite/profiling/profiler.h"
 #include "tensorflow/lite/string.h"
 
 // Note: this is part of TF Lite's Flex delegation code which is to be
@@ -67,6 +67,7 @@ class OpInputs {
     for (int index : TfLiteIntArrayView(indexes)) {
       inputs_.push_back(index);
     }
+    forwardable_.resize(inputs_.size());
   }
   ~OpInputs() {}
 
@@ -89,11 +90,21 @@ class OpInputs {
     }
   }
 
+  void SetForwardable(int i, bool v) { forwardable_[i] = v; }
+
+  bool IsForwardable(int i) const { return forwardable_[i]; }
+
   TensorSource GetTensorSource(int i) const { return sources_[i]; }
 
  private:
   std::vector<int> inputs_;
   std::vector<TensorSource> sources_;
+
+  // List of tensors that can be used by TF in its forwarding optimization.
+  // Doing so allows an input tensor to be modified and used as the output
+  // tensor. The delegate takes care of not holding any references to tensors
+  // in this list while Eager is executing the corresponding op.
+  std::vector<int> forwardable_;
 };
 
 // A list of outputs of a given node of the TensorFlow/Eager graph, along with
@@ -273,13 +284,14 @@ class OpNode {
           return tensorflow::errors::Internal(
               "Cannot read from invalid tensor index ", input_index);
         }
-        auto* handle = new tensorflow::TensorHandle(
-            buffer_map->GetTensor(input_index), nullptr, nullptr, nullptr);
+        tensorflow::TensorHandle* handle;
+        TF_RETURN_IF_ERROR(tensorflow::TensorHandle::CreateLocalHandle(
+            buffer_map->GetTensor(input_index), &handle));
         op_->MutableInputs()->push_back(handle);
       } else {
         // If this is a forwardable tensor, we will remove it from the previous
         // op's list, giving TF the opportunity to reuse its buffer.
-        bool unref_handle = buffer_map->IsForwardable(input_index);
+        bool unref_handle = inputs_.IsForwardable(i);
         auto* handle =
             s.node->outputs_.GetHandle(s.node_output_index, unref_handle);
         op_->MutableInputs()->push_back(handle);
@@ -485,13 +497,13 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
     }
   }
 
-  buffer_map->ClearForwardable();
-  for (const auto& x : tensor_ref_count) {
-    if (x.second == 1) {
-      // This tensor is referenced once by a single op. We can allow the TF
-      // kernel to "forward" it to the output, meaning its buffer will be
-      // reused and overwritten.
-      buffer_map->SetForwardable(x.first);
+  // All tensors that are referenced exactly once are marked as "forwardable",
+  // meaning that we will allow TensorFlow to reuse its buffer as the output of
+  // an op.
+  for (auto& node_data : op_data->nodes) {
+    for (int i = 0; i < node_data->inputs().Size(); ++i) {
+      bool f = (tensor_ref_count[node_data->inputs().TfLiteIndex(i)] == 1);
+      node_data->mutable_inputs()->SetForwardable(i, f);
     }
   }
 
@@ -518,8 +530,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
 
   // Execute the TensorFlow Ops sequentially.
   for (auto& node_data : op_data->nodes) {
-    SCOPED_TAGGED_OPERATOR_PROFILE(
-        reinterpret_cast<profiling::Profiler*>(context->profiler),
+    TFLITE_SCOPED_TAGGED_OPERATOR_PROFILE(
+        reinterpret_cast<Profiler*>(context->profiler),
         node_data->name().c_str(), node_data->index());
 
     auto status = ExecuteFlexOp(context, buffer_map, node_data.get());
@@ -547,9 +559,16 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
 }  // namespace kernel
 
 TfLiteRegistration GetKernel() {
-  TfLiteRegistration registration{&kernel::Init,    &kernel::Free,
-                                  &kernel::Prepare, &kernel::Eval,
-                                  nullptr,          kTfLiteBuiltinDelegate};
+  TfLiteRegistration registration{
+      &kernel::Init,
+      &kernel::Free,
+      &kernel::Prepare,
+      &kernel::Eval,
+      nullptr,                 // .profiling_string
+      kTfLiteBuiltinDelegate,  // .builtin_code
+      "TfLiteFlexDelegate",    // .custom_name
+      1,                       // .version
+  };
   return registration;
 }
 

@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/framework/op_def.pb.h"
+#include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
 #include "tensorflow/core/util/ptr_util.h"
 
@@ -232,6 +233,25 @@ NodeDef* GetInputNode(const NodeDef& node, const MutableGraphView& graph) {
   return graph.GetRegularFanin(input_port).node;
 }
 
+NodeDef* GetInputNode(const NodeDef& node, const MutableGraphView& graph,
+                      int64 i) {
+  if (node.input_size() <= i) return nullptr;
+  MutableGraphView::InputPort input_port = graph.GetInputPort(node.name(), i);
+  return graph.GetRegularFanin(input_port).node;
+}
+
+Status GetDatasetOutputTypesAttr(const NodeDef& node, AttrValue* output_types) {
+  // We don't name the output_types attr consistently, so should check for both.
+  for (const string& attr_name : {"output_types", "Toutput_types"}) {
+    if (node.attr().contains(attr_name)) {
+      *output_types = node.attr().at(attr_name);
+      return Status::OK();
+    }
+  }
+  return errors::InvalidArgument("Could not find output_types attr for node: ",
+                                 node.name(), " with op: ", node.op());
+}
+
 void SetUniqueGraphNodeName(StringPiece prefix, GraphDef* graph,
                             NodeDef* node) {
   string name = string(prefix);
@@ -293,6 +313,20 @@ Status EnsureNodeNamesUnique(Graph* g) {
 
   return Status::OK();
 }
+
+Status GetFetchNode(const MutableGraphView& graph, const GrapplerItem& item,
+                    NodeDef** fetch_node) {
+  if (item.fetch.size() != 1) {
+    return errors::InvalidArgument(
+        "Expected only one fetch node but there were ", item.fetch.size(), ": ",
+        absl::StrJoin(item.fetch, ", "));
+  }
+
+  *fetch_node = graph.GetNode(item.fetch.at(0));
+
+  return Status::OK();
+}
+
 }  // namespace graph_utils
 }  // namespace grappler
 }  // namespace tensorflow

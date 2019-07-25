@@ -1,8 +1,9 @@
-licenses(["notice"])  # Apache 2.0
-
-package(default_visibility = ["//tensorflow:internal"])
-
 load("//tensorflow:tensorflow.bzl", "cuda_py_test")
+
+package(
+    default_visibility = ["//tensorflow:internal"],
+    licenses = ["notice"],  # Apache 2.0
+)
 
 py_library(
     name = "resnet50",
@@ -27,7 +28,7 @@ py_library(
 
 cuda_py_test(
     name = "resnet50_test",
-    size = "large",
+    size = "medium",
     srcs = ["resnet50_test.py"],
     additional_deps = [
         ":resnet50",
@@ -35,10 +36,8 @@ cuda_py_test(
         "//tensorflow/contrib/eager/python:tfe",
         "//tensorflow:tensorflow_py",
     ],
+    shard_count = 4,
     tags = [
-        "noasan",  # Fix b/118130911
-        "nomsan",  # Fix b/118130911
-        "notsan",  # Fix b/118130911
         "optonly",
         "oss_serial",
     ],
@@ -46,7 +45,7 @@ cuda_py_test(
 
 cuda_py_test(
     name = "resnet50_graph_test",
-    size = "large",
+    size = "medium",
     srcs = ["resnet50_graph_test.py"],
     additional_deps = [
         ":resnet50",
@@ -54,6 +53,7 @@ cuda_py_test(
         "//third_party/py/numpy",
         "//tensorflow:tensorflow_py",
     ],
+    shard_count = 4,
     tags = [
         "noasan",
         "nomsan",
