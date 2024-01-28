@@ -520,13 +520,13 @@ def create_low_latency_svdf_model(fingerprint_input, model_settings,
   input_shape = fingerprint_input.get_shape()
   if len(input_shape) != 2:
     raise ValueError('Inputs to `SVDF` should have rank == 2.')
-  if input_shape[-1].value is None:
+  if input_shape[-1] is None:
     raise ValueError('The last dimension of the input to `SVDF` '
                      'should be defined. Found `None`.')
-  if input_shape[-1].value % input_frequency_size != 0:
+  if input_shape[-1] % input_frequency_size != 0:
     raise ValueError('The last dimension of the input to `SVDF` = {0} must be '
                      'a multiple of the frame size = {1}'.format(
-                         input_shape.shape[-1].value, input_frequency_size))
+                         input_shape.shape[-1], input_frequency_size))
 
   # Set number of units (i.e. nodes) and rank.
   rank = 2
