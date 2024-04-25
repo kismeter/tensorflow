@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/service/gpu/stream_executor_util.h"
 
+#include <cstdint>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -24,26 +25,59 @@ limitations under the License.
 #include <sstream>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/base/const_init.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "Eigen/Core"  // from @eigen_archive
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
+#include "xla/primitive_util.h"
+#include "xla/service/gpu/cublas_cudnn.h"
+#include "xla/service/gpu/launch_dimensions.h"
+#include "xla/service/hlo_module_config.h"
+#include "xla/shape_util.h"
+#include "xla/stream_executor/data_type.h"
+#include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/dnn.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/kernel_spec.h"
+#include "xla/stream_executor/launch_dim.h"
+#include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/stream.h"
+#include "xla/tsl/util/env_var.h"
+#include "xla/tsl/util/proto/proto_utils.h"
 #include "xla/util.h"
-#include "tsl/platform/errors.h"
-#include "tsl/util/env_var.h"
-#include "tsl/util/proto/proto_utils.h"
+#include "tsl/platform/ml_dtypes.h"
+#include "tsl/platform/status.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
+
+se::dnn::VersionInfo GetDnnVersionInfo(
+    stream_executor::StreamExecutor* stream_exec,
+    se::dnn::VersionInfo fallback_version) {
+  if (!stream_exec) {
+    return fallback_version;
+  }
+  stream_executor::dnn::DnnSupport* dnn = stream_exec->AsDnn();
+  if (!dnn) {
+    return fallback_version;
+  }
+  return dnn->GetVersion().value_or(fallback_version);
+}
 
 namespace {
 
@@ -330,16 +364,16 @@ absl::StatusOr<std::unique_ptr<se::Kernel>> CreateKernel(
   loader_spec.AddCudaPtxInMemory(ptx, kernel_name);
 
   if (!cubin_data.empty()) {
-    loader_spec.AddCudaCubinInMemory(
-        reinterpret_cast<const char*>(cubin_data.data()), kernel_name);
+    loader_spec.AddCudaCubinInMemory(cubin_data, kernel_name);
   }
 
-  auto kernel_base = std::make_unique<se::Kernel>(stream_exec);
-  TF_RETURN_IF_ERROR(stream_exec->GetKernel(loader_spec, kernel_base.get()));
+  TF_ASSIGN_OR_RETURN(std::unique_ptr<se::Kernel> kernel,
+                      se::Kernel::Create(stream_exec, loader_spec));
+
   se::KernelMetadata m;
   m.set_shared_memory_bytes(shared_mem_bytes);
-  kernel_base->set_metadata(m);
-  return std::move(kernel_base);
+  kernel->set_metadata(m);
+  return kernel;
 }
 
 absl::Status ExecuteKernelOnStream(const se::Kernel& kernel,
@@ -352,6 +386,20 @@ absl::Status ExecuteKernelOnStream(const se::Kernel& kernel,
 
   return stream->parent()->Launch(stream, dims.thread_counts_per_block(),
                                   dims.block_counts(), kernel, *kernel_args);
+}
+
+absl::Status ExecuteKernelOnStream(const se::Kernel& kernel,
+                                   absl::Span<const se::DeviceMemoryBase> args,
+                                   const LaunchDimensions& dims,
+                                   const se::ClusterDim& cluster_dim,
+                                   se::Stream* stream) {
+  TF_ASSIGN_OR_RETURN(
+      std::unique_ptr<se::KernelArgsPackedArrayBase> kernel_args,
+      se::PackKernelArgs(args, kernel.metadata()));
+
+  return stream->parent()->Launch(stream, dims.thread_counts_per_block(),
+                                  dims.block_counts(), cluster_dim, kernel,
+                                  *kernel_args);
 }
 
 // Unimplemented for integers yet.
@@ -413,8 +461,8 @@ static void InitializeTypedBuffer(se::Stream* stream,
     int64_t elements_copied =
         std::min<int64_t>(host_buffer->size() - host_index, elements_left);
     se::DeviceMemoryBase mem(current_addr, elements_copied * sizeof(T));
-    stream->ThenMemcpy(&mem, host_buffer->data() + host_index,
-                       elements_copied * sizeof(T));
+    TF_CHECK_OK(stream->Memcpy(&mem, host_buffer->data() + host_index,
+                               elements_copied * sizeof(T)));
     current_addr += elements_copied * sizeof(T);
     elements_left -= elements_copied;
     host_index += elements_copied;
@@ -468,33 +516,36 @@ absl::StatusOr<se::dnn::ConvolutionKind> GetDNNConvKindFromCudnnConvKind(
   return Internal("Unexpected convolution kind");
 }
 
-absl::StatusOr<se::dnn::FusedMHAKind> GetDNNFusedMHAKindFromCudnnfMHAKind(
-    CudnnfMHAKind kind) {
+absl::StatusOr<se::dnn::NormKind> GetDNNNormKindFromCudnnNormKind(
+    CudnnNormKind kind) {
   switch (kind) {
-    case CudnnfMHAKind::kScaleBiasMaskSoftmaxDropout:
-    case CudnnfMHAKind::kScaleMaskSoftmaxDropout:
-    case CudnnfMHAKind::kBmmBmm:
-    case CudnnfMHAKind::kScaleBiasMaskSoftmax:
-    case CudnnfMHAKind::kScaleMaskSoftmax:
-    case CudnnfMHAKind::kScaleBiasSoftmax:
-    case CudnnfMHAKind::kScaleBiasSoftmaxDropout:
-      return se::dnn::FusedMHAKind::BMM1_OUTPUT_INPUT_TYPE;
-    case CudnnfMHAKind::kSoftmaxDropout:
-    case CudnnfMHAKind::kSoftmax:
-      return se::dnn::FusedMHAKind::BMM1_OUTPUT_FLOAT;
-    // backward
-    case CudnnfMHAKind::kBackwardScaleBiasMaskSoftmaxDropout:
-    case CudnnfMHAKind::kBackwardScaleMaskSoftmaxDropout:
-    case CudnnfMHAKind::kBackwardBmmBmm:
-    case CudnnfMHAKind::kBackwardScaleBiasMaskSoftmax:
-    case CudnnfMHAKind::kBackwardScaleMaskSoftmax:
-    case CudnnfMHAKind::kBackwardScaleBiasSoftmax:
-    case CudnnfMHAKind::kBackwardScaleBiasSoftmaxDropout:
-    case CudnnfMHAKind::kBackwardSoftmaxDropout:
-    case CudnnfMHAKind::kBackwardSoftmax:
-      return se::dnn::FusedMHAKind::BMM1_OUTPUT_INPUT_TYPE;
+    case CudnnNormKind::kLayerForwardInfer:
+      return se::dnn::LAYER_FWD_INFER;
+    case CudnnNormKind::kLayerForwardTrain:
+      return se::dnn::LAYER_FWD_TRAIN;
+    case CudnnNormKind::kLayerBackward:
+      return se::dnn::LAYER_BWD;
+    default:
+      return Internal("Unexpected norm kind");
   }
-  return Internal("Unexpected fMHA kind");
+}
+
+absl::StatusOr<se::dnn::FMHAMaskKind> GetDNNFmhaMaskKindFromCudnnFmhaMaskKind(
+    CudnnfMHAMaskKind kind) {
+  switch (kind) {
+    case CudnnfMHAMaskKind::kNoMask:
+      return se::dnn::NO_MASK;
+    case CudnnfMHAMaskKind::kPadding:
+      return se::dnn::PADDING;
+    case CudnnfMHAMaskKind::kCausal:
+      return se::dnn::CAUSAL;
+    case CudnnfMHAMaskKind::kPaddingCausal:
+      return se::dnn::PADDING_CAUSAL;
+    case CudnnfMHAMaskKind::kAlibi:
+      return se::dnn::ALIBI;
+    default:
+      return Internal("Unexpected fmha mask kind");
+  }
 }
 
 absl::StatusOr<se::dnn::DataType> GetDNNDataTypeFromPrimitiveType(
@@ -519,7 +570,7 @@ absl::StatusOr<se::dnn::DataType> GetDNNDataTypeFromPrimitiveType(
     default:
       break;
   }
-  return Internal("Unsupported convolution datatype");
+  return Internal("Unsupported datatype");
 }
 
 bool RequireDeterminism(const HloModuleConfig& config) {
@@ -598,7 +649,7 @@ absl::Span<AutotuneResult const> TopResultsWithinMeasurementError(
   // This value was picked by repeatedly running a few kernels that run for a
   // short time and observing the run-time variance. A more rigorous analysis
   // of the measurement error might yield a better error threshold.
-  constexpr absl::Duration kMeasurementError = absl::Microseconds(2);
+  constexpr absl::Duration kMeasurementError = absl::Microseconds(4);
 
   absl::Duration min_time = tsl::proto_utils::FromDurationProto(
       results_sorted_by_runtime.front().run_time());

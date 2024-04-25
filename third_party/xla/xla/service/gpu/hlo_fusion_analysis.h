@@ -16,17 +16,16 @@ limitations under the License.
 #ifndef XLA_SERVICE_GPU_HLO_FUSION_ANALYSIS_H_
 #define XLA_SERVICE_GPU_HLO_FUSION_ANALYSIS_H_
 
+#include <memory>
 #include <optional>
+#include <vector>
 
-#include "absl/base/attributes.h"
 #include "absl/log/check.h"
-#include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/ir_emission_utils.h"
-#include "xla/service/gpu/launch_dimensions.h"
 #include "xla/stream_executor/device_description.h"
 
 namespace xla {
@@ -44,14 +43,14 @@ class HloFusionAnalysis {
     kConcatenate,
     kInputSlices,
     kScatter,
+    kCuDnn,
   };
 
   // Precomputed information about inputs (arguments) and outputs (roots) of the
   // fusion.
   struct InputOutputInfo {
-    bool has_4_bit_input;
-    bool has_4_bit_output;
     int smallest_input_dtype_bits;
+    int smallest_output_dtype_bits;
   };
 
   static HloFusionAnalysis Create(FusionBackendConfig backend_config,
@@ -90,8 +89,6 @@ class HloFusionAnalysis {
   const InputOutputInfo& input_output_info() const {
     return input_output_info_;
   }
-
-  static absl::string_view GetEmitterFusionKindString(EmitterFusionKind kind);
 
  private:
   HloFusionAnalysis(FusionBackendConfig fusion_backend_config,

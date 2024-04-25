@@ -43,12 +43,12 @@ limitations under the License.
 #include "xla/stream_executor/scratch_allocator.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/util/determinism.h"
+#include "xla/tsl/util/env_var.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/hash.h"
 #include "tsl/platform/logging.h"
-#include "tsl/util/determinism.h"
-#include "tsl/util/env_var.h"
 
 namespace {
 
@@ -241,31 +241,31 @@ namespace wrap {
 
 #else
 
-#define STREAM_EXECUTOR_MIOPEN_WRAP(__name)                        \
-  struct DynLoadShim__##__name {                                   \
-    static const char* kName;                                      \
-    using FuncPtrT = std::add_pointer<decltype(::__name)>::type;   \
-    static void* GetDsoHandle() {                                  \
-      auto s = internal::CachedDsoLoader::GetMiopenDsoHandle();    \
-      return s.value();                                            \
-    }                                                              \
-    static FuncPtrT LoadOrDie() {                                  \
-      void* f;                                                     \
-      auto s = tsl::Env::Default()                                 \
-          -> GetSymbolFromLibrary(GetDsoHandle(), kName, &f);      \
-      CHECK(s.ok()) << "could not find " << kName                  \
-                    << " in miopen DSO; dlerror: " << s.message(); \
-      return reinterpret_cast<FuncPtrT>(f);                        \
-    }                                                              \
-    static FuncPtrT DynLoad() {                                    \
-      static FuncPtrT f = LoadOrDie();                             \
-      return f;                                                    \
-    }                                                              \
-    template <typename... Args>                                    \
-    miopenStatus_t operator()(Args... args) {                      \
-      return DynLoad()(args...);                                   \
-    }                                                              \
-  } __name;                                                        \
+#define STREAM_EXECUTOR_MIOPEN_WRAP(__name)                              \
+  struct DynLoadShim__##__name {                                         \
+    static const char* kName;                                            \
+    using FuncPtrT = std::add_pointer<decltype(::__name)>::type;         \
+    static void* GetDsoHandle() {                                        \
+      auto s = internal::CachedDsoLoader::GetMiopenDsoHandle();          \
+      return s.value();                                                  \
+    }                                                                    \
+    static FuncPtrT LoadOrDie() {                                        \
+      void* f;                                                           \
+      auto s = tsl::Env::Default()->GetSymbolFromLibrary(GetDsoHandle(), \
+                                                         kName, &f);     \
+      CHECK(s.ok()) << "could not find " << kName                        \
+                    << " in miopen DSO; dlerror: " << s.message();       \
+      return reinterpret_cast<FuncPtrT>(f);                              \
+    }                                                                    \
+    static FuncPtrT DynLoad() {                                          \
+      static FuncPtrT f = LoadOrDie();                                   \
+      return f;                                                          \
+    }                                                                    \
+    template <typename... Args>                                          \
+    miopenStatus_t operator()(Args... args) {                            \
+      return DynLoad()(args...);                                         \
+    }                                                                    \
+  } __name;                                                              \
   const char* DynLoadShim__##__name::kName = #__name;
 
 #endif
@@ -322,6 +322,7 @@ namespace wrap {
   __macro(miopenConvolutionBackwardDataGetWorkSpaceSize)             \
   __macro(miopenCreateRNNDescriptor)                                 \
   __macro(miopenSetRNNDescriptor)                                    \
+  __macro(miopenSetRNNDescriptor_V2)                                 \
   __macro(miopenDestroyRNNDescriptor)                                \
   __macro(miopenGetRNNParamsSize)                                    \
   __macro(miopenGetRNNLayerParam)                                    \
@@ -337,6 +338,15 @@ namespace wrap {
   __macro(miopenGetRNNLayerBiasOffset)                               \
   __macro(miopenGetRNNLayerBiasSize)                                 \
   __macro(miopenGetRNNParamsDescriptor)                              \
+  __macro(miopenCreateDropoutDescriptor)                             \
+  __macro(miopenSetDropoutDescriptor)                                \
+  __macro(miopenGetDropoutDescriptor)                                \
+  __macro(miopenDestroyDropoutDescriptor)                            \
+  __macro(miopenRestoreDropoutDescriptor)                            \
+  __macro(miopenDropoutGetReserveSpaceSize)                          \
+  __macro(miopenDropoutGetStatesSize)                                \
+  __macro(miopenDropoutForward)                                      \
+  __macro(miopenDropoutBackward)                                     \
   __macro(miopenCreateActivationDescriptor)                          \
   __macro(miopenSetActivationDescriptor)                             \
   __macro(miopenGetActivationDescriptor)                             \
@@ -435,6 +445,7 @@ namespace wrap {
   __macro(miopenConvolutionBackwardDataGetWorkSpaceSize)             \
   __macro(miopenCreateRNNDescriptor)                                 \
   __macro(miopenSetRNNDescriptor)                                    \
+  __macro(miopenSetRNNDescriptor_V2)                                 \
   __macro(miopenDestroyRNNDescriptor)                                \
   __macro(miopenGetRNNParamsSize)                                    \
   __macro(miopenGetRNNLayerParam)                                    \
@@ -450,6 +461,15 @@ namespace wrap {
   __macro(miopenGetRNNLayerBiasOffset)                               \
   __macro(miopenGetRNNLayerBiasSize)                                 \
   __macro(miopenGetRNNParamsDescriptor)                              \
+  __macro(miopenCreateDropoutDescriptor)                             \
+  __macro(miopenSetDropoutDescriptor)                                \
+  __macro(miopenGetDropoutDescriptor)                                \
+  __macro(miopenDestroyDropoutDescriptor)                            \
+  __macro(miopenRestoreDropoutDescriptor)                            \
+  __macro(miopenDropoutGetReserveSpaceSize)                          \
+  __macro(miopenDropoutGetStatesSize)                                \
+  __macro(miopenDropoutForward)                                      \
+  __macro(miopenDropoutBackward)                                     \
   __macro(miopenCreateActivationDescriptor)                          \
   __macro(miopenSetActivationDescriptor)                             \
   __macro(miopenGetActivationDescriptor)                             \
@@ -1969,6 +1989,68 @@ class MIOpenRnnParamsDescriptor : public MIOpenDescriptorCommon<void> {
   void operator=(const MIOpenRnnParamsDescriptor&) = delete;
 };
 
+class MIOpenDropoutDescriptor {
+ public:
+  MIOpenDropoutDescriptor(miopenHandle_t miopen_handle, float dropout,
+                          uint64_t seed, ScratchAllocator* state_allocator)
+      : dropout_desc_(nullptr) {
+    auto status = wrap::miopenCreateDropoutDescriptor(&dropout_desc_);
+    if (status != miopenStatusSuccess) {
+      LOG(FATAL) << "call to miopenCreateDropoutDescriptor failed: "
+                 << ToString(status);
+    }
+
+    if (dropout > 0.0f) {
+      DeviceMemory<uint8_t> state_memory;
+      if (state_allocator) {
+        size_t state_sizes_in_bytes = 0;
+        status = wrap::miopenDropoutGetStatesSize(miopen_handle,
+                                                  &state_sizes_in_bytes);
+        if (status != miopenStatusSuccess) {
+          LOG(FATAL) << "call to miopenDropoutGetStatesSize failed: "
+                     << ToString(status);
+        }
+        if (state_sizes_in_bytes > 0) {
+          auto allocated = state_allocator->AllocateBytes(state_sizes_in_bytes);
+          if (!allocated.ok() ||
+              (state_memory = allocated.value()) == nullptr) {
+            LOG(FATAL) << "Failed to allocate dropout state space.";
+          }
+        }
+      }
+
+      bool state_evo = false;  // input placeholder, currently not enabled
+      bool use_mask = true;
+      status = wrap::miopenSetDropoutDescriptor(
+          dropout_desc_ /*dropoutDesc*/, miopen_handle /*handle*/,
+          dropout /*dropout*/, state_memory.opaque() /*states*/,
+          state_memory.size() /*stateSizeInBytes*/, seed /*seed*/,
+          use_mask /*use_mask*/, state_evo /*state_evo*/,
+          MIOPEN_RNG_PSEUDO_XORWOW /*rng_mode*/);
+      if (status != miopenStatusSuccess) {
+        LOG(FATAL) << "call to miopenSetDropoutDescriptor failed: "
+                   << ToString(status);
+      }
+    }
+  }
+
+  ~MIOpenDropoutDescriptor() {
+    auto status = wrap::miopenDestroyDropoutDescriptor(dropout_desc_);
+    if (status != miopenStatusSuccess) {
+      LOG(FATAL) << "call to miopenDestroyDropoutDescriptor failed: "
+                 << ToString(status);
+    }
+  }
+
+  miopenDropoutDescriptor_t handle() const { return dropout_desc_; }
+
+ private:
+  miopenDropoutDescriptor_t dropout_desc_;
+
+  MIOpenDropoutDescriptor(const MIOpenDropoutDescriptor&) = delete;
+  void operator=(const MIOpenDropoutDescriptor&) = delete;
+};
+
 class MIOpenRnnDescriptor : public MIOpenDescriptorCommon<dnn::RnnDescriptor> {
  public:
   MIOpenRnnDescriptor(miopenHandle_t miopen_handle, int num_layers,
@@ -1988,15 +2070,19 @@ class MIOpenRnnDescriptor : public MIOpenDescriptorCommon<dnn::RnnDescriptor> {
         rnn_mode_(rnn_mode),
         data_type_(data_type),
         algorithm_config_(algorithm_config) {
+    // Create the dropout handle
+    miopen_dropout_desc_.reset(new MIOpenDropoutDescriptor(
+        miopen_handle, dropout, seed, state_allocator));
     // Create the RNN handle
     auto status = wrap::miopenCreateRNNDescriptor(&rnn_desc_);
     RETURN_IF_MIOPEN_ERROR(status, "Unable to create RNN descriptor");
-    status = wrap::miopenSetRNNDescriptor(
+    status = wrap::miopenSetRNNDescriptor_V2(
         rnn_desc_ /*rnnDesc*/, hidden_size /*hiddenSize*/,
-        num_layers /*numLayers*/, input_mode /*inputMode*/,
-        direction_mode /*direction*/, rnn_mode /*mode*/,
-        miopenRNNwithBias /*biasMode*/, miopenRNNdefault /*algo*/,
-        data_type /*dataType*/);
+        num_layers /*numLayers*/,
+        miopen_dropout_desc_->handle() /*dropoutDesc*/,
+        input_mode /*inputMode*/, direction_mode /*direction*/,
+        rnn_mode /*mode*/, miopenRNNwithBias /*biasMode*/,
+        miopenRNNdefault /*algo*/, data_type /*dataType*/);
     RETURN_IF_MIOPEN_ERROR(status, "Unable to update RNN descriptor");
     // Create the params handle.
     miopen_params_desc_.reset(
@@ -2053,8 +2139,7 @@ class MIOpenRnnDescriptor : public MIOpenDescriptorCommon<dnn::RnnDescriptor> {
   miopenDataType_t data_type_;
   dnn::AlgorithmConfig algorithm_config_;
   absl::Status status_;
-  // no dropout in MIOpen.
-  // std::unique_ptr<miopenDropoutDescriptor> miopen_dropout_desc_;
+  std::unique_ptr<MIOpenDropoutDescriptor> miopen_dropout_desc_;
   std::unique_ptr<MIOpenRnnParamsDescriptor> miopen_params_desc_;
   MIOpenRnnDescriptor(const MIOpenRnnDescriptor&) = delete;
   void operator=(const MIOpenRnnDescriptor&) = delete;
@@ -2292,7 +2377,9 @@ bool CreateRnnWorkspace(Stream* stream, miopenHandle_t miopen_handle,
 
       return false;
     }
-    stream->ThenMemZero(workspace, workspace_size_in_bytes);
+    if (!stream->MemZero(workspace, workspace_size_in_bytes).ok()) {
+      return false;
+    }
   } else {
     *workspace = DeviceMemory<uint8>();
   }
@@ -2370,7 +2457,8 @@ absl::Status MIOpenSupport::DoRnnForwardImpl(
         LOG(ERROR) << "Fail to allocate RNN reserve space";
         return absl::InternalError("AllocateBytes for RNN failed");
       }
-      stream->ThenMemZero(&reserve_space, reserve_space_size_in_bytes);
+      TF_RETURN_IF_ERROR(
+          stream->MemZero(&reserve_space, reserve_space_size_in_bytes));
     }
   }
 
@@ -2378,7 +2466,10 @@ absl::Status MIOpenSupport::DoRnnForwardImpl(
 
   TF_ASSIGN_OR_RETURN(
       std::optional<GpuTimer> timer,
-      GpuTimer::CreateIfNeeded(AsGpuStream(stream), is_profiling));
+      GpuTimer::CreateIfNeeded(
+          stream,
+          output_profile_result && output_profile_result->warmup_run_executed(),
+          is_profiling));
 
   // make the forward call
   if (!is_training) {
@@ -2488,23 +2579,29 @@ absl::Status MIOpenSupport::DoRnnBackwardImpl(
   auto size_data = input_desc.seq_length() * input_desc.batch_size() *
                    input_desc.data_size();
   if ((size_data > 0) && (input_backprop_data->opaque() != nullptr))
-    stream->ThenMemZero(input_backprop_data, size_data * type_size);
+    TF_RETURN_IF_ERROR(
+        stream->MemZero(input_backprop_data, size_data * type_size));
 
   size_data = input_h_desc.num_layers() * input_h_desc.batch_size() *
               input_h_desc.data_size();
   if ((size_data > 0) && (input_h_backprop_data->opaque() != nullptr))
-    stream->ThenMemZero(input_h_backprop_data, size_data * type_size);
+    TF_RETURN_IF_ERROR(
+        stream->MemZero(input_h_backprop_data, size_data * type_size));
 
   size_data = input_c_desc.num_layers() * input_c_desc.batch_size() *
               input_c_desc.data_size();
   if ((size_data > 0) && (input_c_backprop_data->opaque() != nullptr))
-    stream->ThenMemZero(input_c_backprop_data, size_data * type_size);
+    TF_RETURN_IF_ERROR(
+        stream->MemZero(input_c_backprop_data, size_data * type_size));
 
   const bool is_profiling = output_profile_result != nullptr;
 
   TF_ASSIGN_OR_RETURN(
       std::optional<GpuTimer> timer,
-      GpuTimer::CreateIfNeeded(AsGpuStream(stream), is_profiling));
+      GpuTimer::CreateIfNeeded(
+          stream,
+          output_profile_result && output_profile_result->warmup_run_executed(),
+          is_profiling));
 
   // make the backward data call
   auto status = wrap::miopenRNNBackwardData(
@@ -2533,7 +2630,8 @@ absl::Status MIOpenSupport::DoRnnBackwardImpl(
 
   if (params_backprop_data != nullptr) {
     // Clear the dw to zeros.
-    stream->ThenMemZero(params_backprop_data, params_backprop_data->size());
+    TF_RETURN_IF_ERROR(
+        stream->MemZero(params_backprop_data, params_backprop_data->size()));
     // make the backward weight call
     status = wrap::miopenRNNBackwardWeights(
         miopen.handle() /*handle*/, rnn_desc.handle() /*rnnDesc*/,
@@ -2761,7 +2859,7 @@ absl::Status MIOpenSupport::DoCtcLoss(
 }
 
 absl::StatusOr<std::unique_ptr<dnn::RnnDescriptor>>
-MIOpenSupport::createRnnDescriptor(
+MIOpenSupport::CreateRnnDescriptor(
     int num_layers, int hidden_size, int input_size, int cell_size,
     int batch_size, dnn::RnnInputMode input_mode,
     dnn::RnnDirectionMode direction_mode, dnn::RnnMode rnn_mode,
@@ -2796,7 +2894,7 @@ MIOpenSupport::createRnnDescriptor(
 }
 
 absl::StatusOr<std::unique_ptr<dnn::RnnSequenceTensorDescriptor>>
-MIOpenSupport::createRnnSequenceTensorDescriptor(int seq_length, int batch_size,
+MIOpenSupport::CreateRnnSequenceTensorDescriptor(int seq_length, int batch_size,
                                                  int data_size,
                                                  dnn::DataType data_type) {
   std::unique_ptr<MIOpenRnnSequenceTensorDescriptor> seq_desc(
@@ -2810,7 +2908,7 @@ MIOpenSupport::createRnnSequenceTensorDescriptor(int seq_length, int batch_size,
 }
 
 absl::StatusOr<std::unique_ptr<dnn::RnnStateTensorDescriptor>>
-MIOpenSupport::createRnnStateTensorDescriptor(int num_layer, int batch_size,
+MIOpenSupport::CreateRnnStateTensorDescriptor(int num_layer, int batch_size,
                                               int data_size,
                                               dnn::DataType data_type) {
   std::unique_ptr<MIOpenRnnStateTensorDescriptor> state_desc(
@@ -3183,7 +3281,8 @@ class RocmConvRunner : public dnn::ConvRunner {
     return {{algo_id_, false, workspace_size_}};
   }
 
-  absl::Status operator()(Stream* stream, dnn::ProfileResult* profile_result,
+  absl::Status operator()(Stream* stream,
+                          dnn::ProfileResult* output_profile_result,
                           DeviceMemoryBase scratch_memory,
                           DeviceMemoryBase input_data,
                           DeviceMemoryBase filter_data,
@@ -3194,10 +3293,13 @@ class RocmConvRunner : public dnn::ConvRunner {
     // Beta is the scaling factor for output.
     float beta = 0.0;
 
-    const bool is_profiling = profile_result != nullptr;
-    TF_ASSIGN_OR_RETURN(
-        std::optional<GpuTimer> timer,
-        GpuTimer::CreateIfNeeded(AsGpuStream(stream), is_profiling));
+    const bool is_profiling = output_profile_result != nullptr;
+    TF_ASSIGN_OR_RETURN(std::optional<GpuTimer> timer,
+                        GpuTimer::CreateIfNeeded(
+                            stream,
+                            output_profile_result &&
+                                output_profile_result->warmup_run_executed(),
+                            is_profiling));
 
     miopenStatus_t status = miopenStatusSuccess;
     switch (kind_) {
@@ -3268,11 +3370,11 @@ class RocmConvRunner : public dnn::ConvRunner {
       if (status == miopenStatusSuccess) {
         TF_ASSIGN_OR_RETURN(absl::Duration elapsed,
                             timer->GetElapsedDuration());
-        profile_result->set_elapsed_time_in_ms(
+        output_profile_result->set_elapsed_time_in_ms(
             absl::ToDoubleMilliseconds(elapsed));
         dnn::AlgorithmDesc algotype(algo_id_, false);
-        profile_result->set_algorithm(algotype);
-        profile_result->set_scratch_size(scratch_memory.size());
+        output_profile_result->set_algorithm(algotype);
+        output_profile_result->set_scratch_size(scratch_memory.size());
       }
     }
 
@@ -4099,11 +4201,15 @@ absl::Status ROCmFusedMatmulRunner::gemm(Stream* stream,
   blas::Transpose tb =
       _trans_b ? blas::Transpose::kTranspose : blas::Transpose::kNoTranspose;
 
-  return stream->ThenBlasGemm<T, T>(
-      tb, ta, _n, _m, _k, static_cast<DeviceMemory<T>>(b_data), _ldb,
-      static_cast<DeviceMemory<T>>(a_data), _lda,
-      static_cast<DeviceMemory<T>*>(&c_data), _ldc, NumericOptions{},
-      blas::CallContext::kNone);
+  auto* blas = stream->parent()->AsBlas();
+  if (blas == nullptr) {
+    return absl::InternalError("No Blas support for stream");
+  }
+  return blas->BlasGemm<T, T>(stream, tb, ta, _n, _m, _k,
+                              static_cast<DeviceMemory<T>>(b_data), _ldb,
+                              static_cast<DeviceMemory<T>>(a_data), _lda,
+                              static_cast<DeviceMemory<T>*>(&c_data), _ldc,
+                              NumericOptions{}, blas::CallContext::kNone);
 }
 
 template <typename T>
@@ -4245,7 +4351,6 @@ absl::Status MIOpenSupport::DoPoolForward(
   bool do_backward = false;
   uint8* workspace = nullptr;
   size_t workspace_size = 0;
-  std::unique_ptr<TemporaryDeviceMemory<uint8>> wsp_mem;
   if (m_pooling_cache_enabled && element_type == dnn::DataType::kFloat) {
     do_backward = true;
     auto status = wrap::miopenPoolingGetWorkSpaceSizeV2(
@@ -4264,12 +4369,12 @@ absl::Status MIOpenSupport::DoPoolForward(
                                miopenFloat, pdesc);
       if (cache_hit) {
         // reusing the same buffer
-        workspace = reinterpret_cast<uint8*>(
-            pdesc->workspace->mutable_device_memory()->opaque());
+        workspace = reinterpret_cast<uint8*>(pdesc->workspace.ptr()->opaque());
       } else {
-        wsp_mem = stream->AllocateTemporaryArray<uint8>(workspace_size).value();
-        workspace = reinterpret_cast<uint8*>(
-            wsp_mem->mutable_device_memory()->opaque());
+        ScopedDeviceMemory<uint8> wsp_mem(
+            stream->parent(),
+            stream->parent()->AllocateArray<uint8>(workspace_size));
+        workspace = reinterpret_cast<uint8*>(wsp_mem.ptr()->opaque());
         m_pooling_cache.insert(input_data.opaque(), input_dimensions,
                                output_dimensions, pooling_dimensions,
                                miopenFloat, wsp_mem, workspace_size,
@@ -4326,7 +4431,7 @@ void PoolingWorkspaceCache::insert(
     const void* p, const dnn::BatchDescriptor& input_dimensions,
     const dnn::BatchDescriptor& output_dimensions,
     const dnn::PoolingDescriptor& pooling_dimensions, int _type,
-    std::unique_ptr<TemporaryDeviceMemory<uint8>>& workspace, size_t wsp_size,
+    ScopedDeviceMemory<uint8>& workspace, size_t wsp_size,
     hipStream_t hip_stream) {
   PoolingWorkspaceDescriptor* desc = 0;
   auto it = cache.find(p);
@@ -4423,8 +4528,8 @@ absl::Status MIOpenSupport::DoPoolBackward(
                                           miopen_dtype, pdesc);
     if (cache_hit) {
       assert(pdesc != 0);
-      workspace_ptr = reinterpret_cast<uint8*>(
-          pdesc->workspace->mutable_device_memory()->opaque());
+      workspace_ptr =
+          reinterpret_cast<uint8*>(pdesc->workspace.ptr()->opaque());
       VLOG(1) << "Pooling cache hit";
     } else {
       VLOG(1) << "Pooling cache miss";
@@ -4623,64 +4728,6 @@ bool MIOpenSupport::DoNormalizeBackwardWithDimensions(
   return true;
 }
 
-bool MIOpenSupport::DoDepthConcatenate(
-    Stream* stream, absl::Span<const dnn::BatchDescriptor> input_dimensions,
-    absl::Span<const DeviceMemory<float>* const> input_data,
-    DeviceMemory<float>* output_data) {
-  CHECK_EQ(input_dimensions.size(), input_data.size());
-
-  for (const auto& dimensions : input_dimensions) {
-    if (dimensions.layout() != dnn::DataLayout::kBatchDepthYX) {
-      LOG(ERROR) << "MIOpenSupport::DoDepthConcatenate currently only "
-                    "supports the kBatchDepthYX layout.";
-      return false;
-    }
-  }
-
-  if (input_dimensions.empty()) {
-    return true;  // Nothing to do.
-  }
-
-  dnn::BatchDescriptor output_dimensions =
-      dnn::BatchDescriptor::DepthConcatenateOutputDescriptor(input_dimensions);
-
-  const int64_t area = output_dimensions.width() * output_dimensions.height();
-  const auto index = [area](int64_t batch, int64_t depth, int64_t yx,
-                            int64_t max_depth) {
-    return (batch * max_depth + depth) * area + yx;
-  };
-
-  std::vector<float> output_host(output_dimensions.ElementCount());
-  std::vector<float> tmp;
-  int64_t depth_sum = 0;
-  for (size_t i = 0; i < input_data.size(); ++i) {
-    const auto& dimensions = input_dimensions[i];
-    tmp.resize(dimensions.ElementCount());
-    stream->ThenMemcpyD2H<float>(*input_data[i], absl::MakeSpan(tmp));
-    absl::Status block_status = stream->BlockHostUntilDone();
-    if (!block_status.ok()) {
-      LOG(ERROR) << "BlockHostUntilDone failed: " << block_status;
-      return false;
-    }
-
-    for (int64_t batch = 0; batch < output_dimensions.count(); ++batch) {
-      for (int64_t yx = 0; yx < area; ++yx) {
-        for (int64_t depth = 0; depth < dimensions.feature_map_count();
-             ++depth) {
-          LOG(INFO) << output_dimensions.ElementCount() << ' ' << batch << ' '
-                    << yx << ' ' << depth;
-          output_host[index(batch, depth + depth_sum, yx,
-                            output_dimensions.feature_map_count())] =
-              tmp[index(batch, depth, yx, dimensions.feature_map_count())];
-        }
-      }
-    }
-    depth_sum += dimensions.feature_map_count();
-  }
-  stream->ThenMemcpyH2D<float>(output_host, output_data);
-  return true;
-}
-
 bool MIOpenSupport::DeriveOutputBatchDescriptor(
     const BatchDescriptor& batch_descriptor,
     const FilterDescriptor& filter_descriptor,
@@ -4736,7 +4783,7 @@ void initialize_miopen() {
     absl::Status status =
         PluginRegistry::Instance()->RegisterFactory<PluginRegistry::DnnFactory>(
             rocm::kROCmPlatformId, "MIOpen",
-            [](internal::StreamExecutorInterface* parent) -> dnn::DnnSupport* {
+            [](StreamExecutorInterface* parent) -> dnn::DnnSupport* {
               gpu::GpuExecutor* rocm_executor =
                   dynamic_cast<gpu::GpuExecutor*>(parent);
               if (rocm_executor == nullptr) {
@@ -4763,5 +4810,6 @@ void initialize_miopen() {
 
 }  // namespace stream_executor
 
-REGISTER_MODULE_INITIALIZER(register_miopen,
-                            { stream_executor::initialize_miopen(); });
+STREAM_EXECUTOR_REGISTER_MODULE_INITIALIZER(register_miopen, {
+  stream_executor::initialize_miopen();
+});

@@ -16,29 +16,15 @@ limitations under the License.
 #include "xla/service/gpu/ir_emission_utils.h"
 
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <vector>
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/IR/Builders.h"  // from @llvm-project
-#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
-#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
-#include "mlir/IR/DialectRegistry.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "mlir/IR/Operation.h"  // from @llvm-project
-#include "mlir/Parser/Parser.h"  // from @llvm-project
-#include "mlir/Support/LLVM.h"  // from @llvm-project
-#include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
-#include "xla/mlir_hlo/lhlo/IR/lhlo_ops.h"
-#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "xla/service/gpu/hlo_traversal.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/translate/hlo_to_mhlo/hlo_utils.h"
 #include "xla/types.h"
 #include "xla/util.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/test.h"
 
@@ -46,63 +32,6 @@ namespace xla {
 namespace gpu {
 
 class IrEmissionUtilsTest : public HloTestBase {};
-
-TEST_F(IrEmissionUtilsTest, TestOperandPartitionNoAlias) {
-  mlir::DialectRegistry registry;
-  registry.insert<mlir::lmhlo::LmhloDialect>();
-  registry.insert<mlir::func::FuncDialect>();
-  mlir::MLIRContext context(registry);
-
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"(
-    func.func @foo(%arg0 : memref<f32>, %arg1 : memref<f32>, %arg2 : memref<f32>) {
-      "lmhlo.add" (%arg0, %arg1, %arg2) : (memref<f32>, memref<f32>, memref<f32>) -> ()
-      "lmhlo.terminator" () : () -> ()
-    }
-  )",
-                                                        &context);
-  mlir::func::FuncOp func =
-      mlir::cast<mlir::func::FuncOp>(module->lookupSymbol("foo"));
-  mlir::Operation* op = &func.getBody().front().front();
-  EXPECT_EQ(2, PartitionLmhloOperandsAndOutputs(op));
-}
-
-TEST_F(IrEmissionUtilsTest, TestOperandPartitionWithAlias0) {
-  mlir::DialectRegistry registry;
-  registry.insert<mlir::lmhlo::LmhloDialect>();
-  registry.insert<mlir::func::FuncDialect>();
-  mlir::MLIRContext context(registry);
-
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"(
-    func.func @foo(%arg0 : memref<f32>, %arg1 : memref<f32>, %arg2 : memref<f32>) {
-      "lmhlo.add" (%arg0, %arg1, %arg0) : (memref<f32>, memref<f32>, memref<f32>) -> ()
-      "lmhlo.terminator" () : () -> ()
-    }
-  )",
-                                                        &context);
-  mlir::func::FuncOp func =
-      mlir::cast<mlir::func::FuncOp>(module->lookupSymbol("foo"));
-  mlir::Operation* op = &func.getBody().front().front();
-  EXPECT_EQ(2, PartitionLmhloOperandsAndOutputs(op));
-}
-
-TEST_F(IrEmissionUtilsTest, TestOperandPartitionWithAlias1) {
-  mlir::DialectRegistry registry;
-  registry.insert<mlir::lmhlo::LmhloDialect>();
-  registry.insert<mlir::func::FuncDialect>();
-  mlir::MLIRContext context(registry);
-
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"(
-    func.func @foo(%arg0 : memref<f32>, %arg1 : memref<f32>, %arg2 : memref<f32>) {
-      "lmhlo.add" (%arg0, %arg1, %arg1) : (memref<f32>, memref<f32>, memref<f32>) -> ()
-      "lmhlo.terminator" () : () -> ()
-    }
-  )",
-                                                        &context);
-  mlir::func::FuncOp func =
-      mlir::cast<mlir::func::FuncOp>(module->lookupSymbol("foo"));
-  mlir::Operation* op = &func.getBody().front().front();
-  EXPECT_EQ(2, PartitionLmhloOperandsAndOutputs(op));
-}
 
 TEST_F(IrEmissionUtilsTest, FindTiledLogicalTranspose) {
   const char* hlo = R"(
@@ -300,6 +229,37 @@ TEST_F(IrEmissionUtilsTest, FindReduceHeroEpilogueFusionHeroAlsoUsedAsNonHero) {
   EXPECT_EQ(result2.name(), "reduce.0");
 }
 
+TEST_F(IrEmissionUtilsTest, DoNotFindTransposeHeroEpilogueFusionTwoRootUsers) {
+  const char* hlo = R"(
+    HloModule module
+
+    fused_computation {
+      param_0 = f32[64,32]{1,0} parameter(0)
+      transpose = f32[32,64]{1,0} transpose(param_0), dimensions={1,0}
+      bitcast.1 = f32[1,32,64]{2,1,0} bitcast(transpose)
+      sign.1 = f32[1,32,64]{2,1,0} sign(bitcast.1)
+      ROOT tuple.12 = (f32[1,32,64]{2,1,0}, f32[1,32,64]{2,1,0}) tuple(bitcast.1, sign.1)
+    }
+
+    ENTRY main.7749 {
+      Arg_2.1 = f32[64,32]{1,0} parameter(0)
+      ROOT fusion = (f32[1,32,64]{2,1,0}, f32[1,32,64]{2,1,0}) fusion(Arg_2.1), kind=kInput, calls=fused_computation
+    }
+    )";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo));
+
+  HloInstruction* r = module->entry_computation()->root_instruction();
+  auto fusion = HloFusionAdaptor::ForInstruction(r);
+  const auto& result =
+      FindNonTrivialHero(fusion->GetRoots()[0].instruction(), *fusion);
+  EXPECT_EQ(result.name(), "bitcast.1");
+  const auto& result2 =
+      FindNonTrivialHero(fusion->GetRoots()[1].instruction(), *fusion);
+  EXPECT_EQ(result2.name(), "sign.1");
+}
+
 TEST_F(IrEmissionUtilsTest, FindAnyTiledTransposeWithIntermediateBinaryOp) {
   const char* hlo = R"(
 HloModule module
@@ -396,11 +356,9 @@ ENTRY entry {
       module->entry_computation()->GetInstructionWithName("t");
   HloInstruction* fusion =
       module->entry_computation()->GetInstructionWithName("fusion");
-  EXPECT_EQ(
-      &FindNonTrivialHero(*r, ProducerConsumerFusion(
-                                  HloFusionAdaptor::ForInstruction(transpose),
-                                  HloFusionAdaptor::ForInstruction(fusion))),
-      transpose);
+  auto fusion_adaptor =
+      HloFusionAdaptor::ForProducerConsumer(transpose, fusion);
+  EXPECT_EQ(&FindNonTrivialHero(*r, *fusion_adaptor), transpose);
 }
 
 TEST_F(IrEmissionUtilsTest, FindNonTrivialHeroInsideFusion) {
@@ -431,11 +389,8 @@ ENTRY entry {
                                   .front();
   HloInstruction* fusion =
       module->entry_computation()->GetInstructionWithName("fusion");
-  EXPECT_EQ(
-      &FindNonTrivialHero(
-          *r, ProducerConsumerFusion(HloFusionAdaptor::ForInstruction(fusion),
-                                     HloFusionAdaptor::ForInstruction(r))),
-      transpose);
+  auto fusion_adaptor = HloFusionAdaptor::ForProducerConsumer(fusion, r);
+  EXPECT_EQ(&FindNonTrivialHero(*r, *fusion_adaptor), transpose);
 }
 
 TEST_F(IrEmissionUtilsTest, TransposeReachableViaTrivialAndNontrivialOps) {

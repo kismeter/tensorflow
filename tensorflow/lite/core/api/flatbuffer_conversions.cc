@@ -925,6 +925,7 @@ TfLiteStatus ParseOpDataTfLite(const Operator* op, BuiltinOperator op_type,
     case BuiltinOperator_STABLEHLO_SLICE:
     case BuiltinOperator_STABLEHLO_BROADCAST_IN_DIM:
     case BuiltinOperator_STABLEHLO_CONVOLUTION:
+    case BuiltinOperator_STABLEHLO_COMPOSITE:
     case BuiltinOperator_STABLEHLO_LOGISTIC:
     case BuiltinOperator_STABLEHLO_ADD:
     case BuiltinOperator_STABLEHLO_DIVIDE:
@@ -1016,6 +1017,9 @@ TfLiteStatus ConvertTensorType(TensorType tensor_type, TfLiteType* type,
   switch (tensor_type) {
     case TensorType_FLOAT16:
       *type = kTfLiteFloat16;
+      return kTfLiteOk;
+    case TensorType_BFLOAT16:
+      *type = kTfLiteBFloat16;
       return kTfLiteOk;
     case TensorType_FLOAT32:
       *type = kTfLiteFloat32;
